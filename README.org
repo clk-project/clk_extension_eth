@@ -1,0 +1,29 @@
+#+title: README
+#+author: konubinix
+#+email: konubinixweb@gmail.com
+#+language: en
+* Installation
+  :PROPERTIES:
+  :CUSTOM_ID: 532b8f72-ca50-4a56-b057-456f4798f36a
+  :END:
+
+  Either:
+
+  1. install [[https://clk-project.org/][clk-project]] and the extension with
+
+     #+BEGIN_SRC shell
+       curl -sSL https://clk-project.org/install.sh | env CLK_EXTENSIONS=eth bash
+     #+END_SRC
+
+  2. if you already have clk, you can simply install this extension with
+     #+BEGIN_SRC shell
+       clk extension install eth
+     #+END_SRC
+* Usage
+  :PROPERTIES:
+  :CUSTOM_ID: 3a34b5ac-f224-40a1-bd65-ba6bc10b0c81
+  :END:
+
+  #+BEGIN_SRC shell
+    clk eth --mnemonic "my seed phrase" contract --address "deadbeef" --abi "path to some json abi" call SomeFunction arg1=value1 arg2=value2
+  #+END_SRC
