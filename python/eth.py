@@ -92,6 +92,9 @@ class ContractMethod:
 
 class Eth:
 
+    def __init__(self):
+        self.proof_of_authority = None
+
     def walk_blocks(self):
         b = self.w3.eth.get_block('latest')
         while b:
@@ -154,6 +157,10 @@ class Eth:
 
         w3.middleware_onion.add(
             construct_sign_and_send_raw_middleware(self.account))
+        if self.proof_of_authority is not False or any(
+                part in self.url for part in ["polygon"]):
+            from web3.middleware import geth_poa_middleware
+            w3.middleware_onion.inject(geth_poa_middleware, layer=0)
         w3.eth.default_account = self.account.address
         return w3
 
@@ -234,6 +241,9 @@ class ContractCallerArgs(DynamicChoice):
     help="Url to connect to the node",
     default="http://127.0.0.1:8545",
 )
+@flag("--proof-of-authority",
+      expose_class=Eth,
+      help="Deal with Polygon, BNB, geth --dev or Goerli")
 def eth():
     "Play with some web3 stuff"
 
