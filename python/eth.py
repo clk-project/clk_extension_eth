@@ -448,6 +448,20 @@ def created_contracts():
 
 
 @eth.command()
+@argument("address", help="Default to my address", required=False)
+@option("--unit",
+        help="What unit to show",
+        type=click.Choice(units),
+        default="wei")
+def balance(address, unit):
+    "Get the balance of the given address"
+    address = address or config.eth.myaddress
+    value = config.eth.w3.eth.get_balance(address)
+    eth: Eth = config.eth
+    print(eth.w3.from_wei(value, unit))
+
+
+@eth.command()
 @argument("address")
 def history(address):
     for history_ in config.eth.history(address):
