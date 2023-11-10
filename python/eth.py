@@ -2,6 +2,7 @@
 # -*- coding:utf-8 -*-
 import json
 from datetime import datetime
+from decimal import Decimal, InvalidOperation
 from pathlib import Path
 
 import click
@@ -20,6 +21,16 @@ from web3 import Web3
 from web3.datastructures import AttributeDict
 
 LOGGER = get_logger(__name__)
+
+
+class DecimalType(click.ParamType):
+
+    def convert(self, value, param, ctx):
+        try:
+            return Decimal(value)
+        except InvalidOperation:
+            raise click.UsageError(
+                f"{param.name}: Expected a decimal number, got {value}")
 
 
 class ContractMethod:
@@ -445,7 +456,7 @@ def history(address):
 
 @eth.command()
 @argument("to", help="Address that will receive the value")
-@argument("amount", help="How much to send", type=int)
+@argument("amount", help="How much to send", type=DecimalType())
 @argument("unit",
           help="What unit to use",
           type=click.Choice(units),
