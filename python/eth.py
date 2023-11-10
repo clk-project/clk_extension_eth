@@ -459,3 +459,12 @@ def send(to, amount, unit):
         "value": to_wei(amount, unit)
     })
     click.echo(result.hex())
+
+
+@eth.command()
+def generate_mnemonic():
+    "Generate a private key to play with"
+    from mnemonic import Mnemonic
+    m = Mnemonic("english")
+    words = m.generate()
+    print(words)
