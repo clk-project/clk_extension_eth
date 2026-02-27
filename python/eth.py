@@ -164,14 +164,14 @@ class Eth:
     @property
     def w3(self) -> Web3:
         w3 = Web3(Web3.HTTPProvider(self.url))
-        from web3.middleware import construct_sign_and_send_raw_middleware
+        from web3.middleware import SignAndSendRawMiddlewareBuilder
 
         w3.middleware_onion.add(
-            construct_sign_and_send_raw_middleware(self.account))
+            SignAndSendRawMiddlewareBuilder.build(self.account))
         if self.proof_of_authority is not False or any(
                 part in self.url for part in ["polygon"]):
-            from web3.middleware import geth_poa_middleware
-            w3.middleware_onion.inject(geth_poa_middleware, layer=0)
+            from web3.middleware import ExtraDataToPOAMiddleware
+            w3.middleware_onion.inject(ExtraDataToPOAMiddleware, layer=0)
         w3.eth.default_account = self.account.address
         return w3
 
