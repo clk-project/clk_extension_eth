@@ -456,7 +456,10 @@ def created_contracts():
 def balance(address, unit):
     "Get the balance of the given address"
     address = address or config.eth.myaddress
-    value = config.eth.w3.eth.get_balance(address)
+    checksummed = Web3.to_checksum_address(address)
+    if checksummed != address:
+        LOGGER.warning(f"Converting {address} to checksum address {checksummed}")
+    value = config.eth.w3.eth.get_balance(checksummed)
     eth: Eth = config.eth
     print(eth.w3.from_wei(value, unit))
 
@@ -464,7 +467,10 @@ def balance(address, unit):
 @eth.command()
 @argument("address")
 def history(address):
-    for history_ in config.eth.history(address):
+    checksummed = Web3.to_checksum_address(address)
+    if checksummed != address:
+        LOGGER.warning(f"Converting {address} to checksum address {checksummed}")
+    for history_ in config.eth.history(checksummed):
         print(json_dumps(make_serializable(history_)))
 
 
@@ -477,13 +483,29 @@ def history(address):
           default="wei")
 def send(to, amount, unit):
     "Send some value to some address"
+    checksummed = Web3.to_checksum_address(to)
+    if checksummed != to:
+        LOGGER.warning(f"Converting {to} to checksum address {checksummed}")
     eth: Eth = config.eth
     result = eth.w3.eth.send_transaction({
         "from": eth.myaddress,
-        "to": to,
+        "to": checksummed,
         "value": to_wei(amount, unit)
     })
     click.echo(result.hex())
+
+
+@eth.command()
+@argument("public_key", help="The public key (hex, with or without 0x prefix)")
+def public_key_to_address(public_key):
+    "Derive an Ethereum address from a public key"
+    from eth_utils import keccak
+    key_bytes = bytes.fromhex(public_key.removeprefix("0x"))
+    # For uncompressed keys (65 bytes starting with 04), skip the 04 prefix
+    if len(key_bytes) == 65 and key_bytes[0] == 0x04:
+        key_bytes = key_bytes[1:]
+    address = Web3.to_checksum_address(keccak(key_bytes)[-20:])
+    print(address)
 
 
 @eth.command()
