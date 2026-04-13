@@ -193,6 +193,9 @@ class ContractCaller(DynamicChoice):
             if not fct.startswith("__") and fct not in {"address", "abi"}
         ]
 
+    def converter(self, value):
+        return value.split("(")[0]
+
 
 class ContractCallerArgs(DynamicChoice):
     number = 0
