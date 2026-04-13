@@ -520,6 +520,20 @@ def public_key_to_address(public_key):
 
 
 @eth.command()
+@argument("address", help="The contract address to check")
+def is_smartcontract(address):
+    "Check if an address is a smart contract (exit 0 = yes, 1 = no)"
+    checksummed = Web3.to_checksum_address(address)
+    bytecode = config.eth.w3.eth.get_code(checksummed)
+    if bytecode and bytecode != b'':
+        LOGGER.info(f"{checksummed}: {len(bytecode)} bytes of bytecode")
+    else:
+        LOGGER.info(f"{checksummed}: no bytecode")
+        ctx = click.get_current_context()
+        ctx.exit(1)
+
+
+@eth.command()
 def generate_mnemonic():
     "Generate a private key to play with"
     from mnemonic import Mnemonic
