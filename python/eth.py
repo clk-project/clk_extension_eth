@@ -105,6 +105,7 @@ class Eth:
 
     def __init__(self):
         self.proof_of_authority = None
+        self.private_key = None
 
     def walk_blocks(self):
         b = self.w3.eth.get_block('latest')
@@ -156,6 +157,10 @@ class Eth:
 
     @property
     def account(self):
+        if self.private_key:
+            # from_key doesn't need enable_unaudited_hdwallet_features —
+            # that flag is only required by from_mnemonic's HD derivation
+            return Account.from_key(self.private_key)
         Account.enable_unaudited_hdwallet_features()
         return Account.from_mnemonic(
             self.mnemonic,
@@ -251,6 +256,12 @@ class ContractCallerArgs(DynamicChoice):
     expose_class=Eth,
     help="Url to connect to the node",
     default="http://127.0.0.1:8545",
+)
+@option(
+    "--private-key",
+    expose_class=Eth,
+    help="Use a private key directly instead of a mnemonic",
+    default=None,
 )
 @flag("--proof-of-authority",
       expose_class=Eth,
