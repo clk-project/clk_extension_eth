@@ -211,6 +211,8 @@ class ContractCallerArgs(DynamicChoice):
             key = inp["name"]
         if inp["type"].endswith("[]"):
             val = json.loads(val)
+        elif inp["type"] == "address":
+            val = Web3.to_checksum_address(val)
         elif inp["type"].startswith("uint"):
             val = int(val)
         elif inp["type"] == "bool":
