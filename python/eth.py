@@ -33,6 +33,23 @@ class DecimalType(click.ParamType):
                 f"{param.name}: Expected a decimal number, got {value}")
 
 
+class AbiPath(click.ParamType):
+    name = "abi-path"
+
+    def convert(self, value, param, ctx):
+        if isinstance(value, Path):
+            return value
+        if value.startswith("alias:"):
+            alias = value[len("alias:"):]
+            path = Path(__file__).parent.parent / "files" / f"{alias}.json"
+            if not path.exists():
+                self.fail(
+                    f"Unknown abi alias {alias!r}: {path} not found",
+                    param, ctx)
+            return path
+        return Path(value)
+
+
 class ContractMethod:
     args = []
 
@@ -354,9 +371,11 @@ def ipython():
 @eth.group()
 @option(
     "--abi-path",
-    help="The abi to interract with the contract",
+    help=("The abi to interract with the contract."
+          " Accepts a filesystem path or `alias:<name>` to reference"
+          " an ABI bundled with this extension (under files/<name>.json)."),
     expose_class=Eth,
-    type=Path,
+    type=AbiPath(),
     required=True,
 )
 @option(
