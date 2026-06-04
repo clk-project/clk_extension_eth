@@ -1,0 +1,59 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+source "_clk.sh"
+
+clk_usage () {
+    cat<<EOF
+$0
+
+Convert an amount between crypto and fiat using the current CoinGecko rate.
+--
+A:amount:str:Amount to convert (decimal)
+A:from:["eth","usdc","eur","vnd","usd"]:Source unit
+A:to:["eth","usdc","eur","vnd","usd"]:Target unit
+EOF
+}
+
+clk_help_handler "$@"
+
+_coin_id () {
+    case "$1" in
+        eth) echo "ethereum" ;;
+        usdc) echo "usd-coin" ;;
+        *) echo "" ;;
+    esac
+}
+
+FROM="$(clk_value from)"
+TO="$(clk_value to)"
+AMOUNT="$(clk_value amount)"
+
+FROM_COIN="$(_coin_id "${FROM}")"
+TO_COIN="$(_coin_id "${TO}")"
+
+dap_dev_coingecko_rate () {
+    local coin="$1" currency="$2"
+    bkt -- curl -sSf "https://api.coingecko.com/api/v3/simple/price?ids=${coin}&vs_currencies=${currency}" \
+        | jq -e --arg coin "${coin}" --arg currency "${currency}" '.[$coin][$currency]'
+}
+
+if [ "${FROM}" = "${TO}" ]; then
+    jq -n --argjson amount "${AMOUNT}" '$amount'
+elif [ -n "${FROM_COIN}" ] && [ -z "${TO_COIN}" ]; then
+    RATE="$(dap_dev_coingecko_rate "${FROM_COIN}" "${TO}")"
+    jq -n --argjson amount "${AMOUNT}" --argjson rate "${RATE}" '$amount * $rate'
+elif [ -z "${FROM_COIN}" ] && [ -n "${TO_COIN}" ]; then
+    RATE="$(dap_dev_coingecko_rate "${TO_COIN}" "${FROM}")"
+    jq -n --argjson amount "${AMOUNT}" --argjson rate "${RATE}" '$amount / $rate'
+elif [ -z "${FROM_COIN}" ] && [ -z "${TO_COIN}" ]; then
+    clk log --level warning "cross-rate via ethereum: result may differ slightly from a direct ${FROM}/${TO} quote"
+    RATE_FROM="$(dap_dev_coingecko_rate ethereum "${FROM}")"
+    RATE_TO="$(dap_dev_coingecko_rate ethereum "${TO}")"
+    jq -n --argjson amount "${AMOUNT}" --argjson rate_from "${RATE_FROM}" --argjson rate_to "${RATE_TO}" '$amount * $rate_to / $rate_from'
+else
+    clk log --level warning "cross-rate via usd: result may differ slightly from a direct ${FROM}/${TO} quote"
+    RATE_FROM="$(dap_dev_coingecko_rate "${FROM_COIN}" usd)"
+    RATE_TO="$(dap_dev_coingecko_rate "${TO_COIN}" usd)"
+    jq -n --argjson amount "${AMOUNT}" --argjson rate_from "${RATE_FROM}" --argjson rate_to "${RATE_TO}" '$amount * $rate_from / $rate_to'
+fi
