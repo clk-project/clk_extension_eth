@@ -10,8 +10,8 @@ $0
 Convert an amount between crypto and fiat using the current CoinGecko rate.
 --
 A:amount:str:Amount to convert (decimal)
-A:from:["eth","usdc","eur","vnd","usd"]:Source unit
-A:to:["eth","usdc","eur","vnd","usd"]:Target unit
+A:from:["eth","usdc","eur","vnd","usd","jpy"]:Source unit
+A:to:["eth","usdc","eur","vnd","usd","jpy"]:Target unit
 EOF
 }
 
