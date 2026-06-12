@@ -22,6 +22,34 @@
       "outputs": [
         { "name": "", "type": "bool" }
       ]
+    },
+    {
+      "type": "function",
+      "name": "decimals",
+      "stateMutability": "view",
+      "inputs": [],
+      "outputs": [
+        { "name": "", "type": "uint8" }
+      ]
+    },
+    {
+      "type": "function",
+      "name": "symbol",
+      "stateMutability": "view",
+      "inputs": [],
+      "outputs": [
+        { "name": "", "type": "string" }
+      ]
+    },
+    {
+      "type": "event",
+      "name": "Transfer",
+      "anonymous": false,
+      "inputs": [
+        { "name": "from", "type": "address", "indexed": true },
+        { "name": "to", "type": "address", "indexed": true },
+        { "name": "value", "type": "uint256", "indexed": false }
+      ]
     }
   ]
 }

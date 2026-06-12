@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding:utf-8 -*-
 import json
+import re
 from datetime import datetime
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
@@ -8,7 +9,7 @@ from pathlib import Path
 import click
 from cached_property import cached_property
 from clk.config import config
-from clk.core import run
+from clk.core import run, cache_disk
 from clk.decorators import argument, flag, group, option
 from clk.lib import json_dumps, parsedatetime
 from clk.log import get_logger
@@ -21,6 +22,45 @@ from web3 import Web3
 from web3.datastructures import AttributeDict
 
 LOGGER = get_logger(__name__)
+
+# keccak256("Transfer(address,address,uint256)")
+TRANSFER_TOPIC = ("0xddf252ad1be2c89b69c2b068fc378d"
+                  "aa952ba7f163c4a11628f55a4df523b3ef")
+
+
+def _read_only_w3(url):
+    "A lightweight, POA-tolerant read-only web3 for the cached RPC helpers."
+    w3 = Web3(Web3.HTTPProvider(url))
+    from web3.middleware import ExtraDataToPOAMiddleware
+    w3.middleware_onion.inject(ExtraDataToPOAMiddleware, layer=0)
+    return w3
+
+
+@cache_disk(expire=3600 * 24 * 7)
+def _rpc_block_timestamp(url, block_number):
+    "Timestamp of a block — immutable, so safe to cache on disk for a week."
+    return _read_only_w3(url).eth.get_block(block_number).timestamp
+
+
+@cache_disk(expire=3600 * 24 * 7)
+def _rpc_get_logs(url, address, topics, from_block, to_block):
+    """eth_getLogs for one window, normalized to plain serializable dicts.
+
+    Cached on disk so repeated runs of a command reuse a window's logs instead
+    of re-hitting the node (a finalized block range's logs never change)."""
+    raw = _read_only_w3(url).eth.get_logs({
+        "address": Web3.to_checksum_address(address),
+        "topics": topics,
+        "fromBlock": from_block,
+        "toBlock": to_block,
+    })
+    return [{
+        "blockNumber": log["blockNumber"],
+        "logIndex": log["logIndex"],
+        "transactionHash": HexBytes(log["transactionHash"]).hex(),
+        "topics": [HexBytes(topic).hex() for topic in log["topics"]],
+        "data": HexBytes(log["data"]).hex(),
+    } for log in raw]
 
 
 class DecimalType(click.ParamType):
@@ -158,6 +198,107 @@ class Eth:
 
     def myhistory(self, limit=None):
         yield from self.history(address=self.myaddress, limit=limit)
+
+    def block_timestamp(self, block_number, _cache={}):
+        "Return the unix timestamp of a block (disk-cached, plus a proc memo)."
+        if block_number not in _cache:
+            _cache[block_number] = _rpc_block_timestamp(self.url, block_number)
+        return _cache[block_number]
+
+    def block_at_timestamp(self, timestamp):
+        """Smallest block number whose timestamp is >= `timestamp`.
+
+        Binary search over block timestamps (reusing the memoized lookup), so
+        callers can express a range in wall-clock time rather than blocks."""
+        target = int(timestamp)
+        lo, hi = 0, self.w3.eth.block_number
+        if self.block_timestamp(hi) < target:
+            return hi
+        while lo < hi:
+            mid = (lo + hi) // 2
+            if self.block_timestamp(mid) < target:
+                lo = mid + 1
+            else:
+                hi = mid
+        return lo
+
+    def transfer_logs(self, address, from_block, to_block):
+        """Return the ERC20 Transfer events of `self.address` touching `address`.
+
+        Performs two passes (address as the `from` and as the `to` of the
+        transfer) and strides forward in windows, learning the node's max
+        block range from its error message so it neither re-discovers the
+        limit on every call nor fans out into a flood of split requests.
+        Each window goes through the disk-cached `_rpc_get_logs`."""
+        addr_topic = "0x" + address[2:].lower().rjust(64, "0")
+        passes = ([TRANSFER_TOPIC, addr_topic],        # address is the sender
+                  [TRANSFER_TOPIC, None, addr_topic])  # address is the receiver
+        seen = set()
+        merged = []
+        for topics in passes:
+            for log in self._scan_logs(topics, from_block, to_block):
+                # a self-transfer matches both passes: dedupe on tx + log index
+                key = (log["transactionHash"], log["logIndex"])
+                if key in seen:
+                    continue
+                seen.add(key)
+                merged.append({
+                    "blockNumber": log["blockNumber"],
+                    "logIndex": log["logIndex"],
+                    "tx_hash": log["transactionHash"],
+                    "from": Web3.to_checksum_address(
+                        "0x" + log["topics"][1][-40:]),
+                    "to": Web3.to_checksum_address(
+                        "0x" + log["topics"][2][-40:]),
+                    "value": int(log["data"], 16),
+                })
+        merged.sort(key=lambda log: (log["blockNumber"], log["logIndex"]))
+        return merged
+
+    @staticmethod
+    def _parse_max_range(message):
+        "Extract the node's advertised max getLogs block range, if any."
+        match = re.search(r"max(?:imum)?\s+block\s+range\s+(\d+)",
+                          message, re.IGNORECASE)
+        return int(match.group(1)) if match else None
+
+    def _scan_logs(self, topics, from_block, to_block):
+        """Scan [from_block, to_block] forward, one window per call.
+
+        Windows are snapped to fixed block-number boundaries (multiples of the
+        window size) rather than to `from_block`, so the same windows recur
+        across invocations even when the requested range slides — letting the
+        disk cache absorb everything but the moving head window. Results are
+        filtered back to the exact requested range.
+
+        Starts optimistically large; on a 'max block range' rejection it learns
+        the exact window the node allows (or halves as a fallback) and remembers
+        it on the instance so later windows and the second pass reuse it."""
+        results = []
+        cursor = from_block
+        # `_log_window` is remembered across windows and passes
+        step = getattr(self, "_log_window", None) or 100_000
+        while cursor <= to_block:
+            win_start = (cursor // step) * step  # snap to a fixed boundary
+            win_end = win_start + step - 1
+            try:
+                logs = _rpc_get_logs(self.url, self.address, topics,
+                                     win_start, min(win_end, to_block))
+                results += [log for log in logs
+                            if from_block <= log["blockNumber"] <= to_block]
+                cursor = win_end + 1
+            except Exception as e:
+                advertised = self._parse_max_range(str(e))
+                if advertised is not None and advertised < step:
+                    step = advertised
+                elif step > 1:
+                    step = step // 2
+                else:
+                    raise
+                self._log_window = step
+                LOGGER.debug(
+                    f"Narrowed getLogs window to {step} blocks after: {e}")
+        return results
 
     def filter_contract(self, history=None):
         yield from (tx for tx in (history or self.myhistory())
@@ -417,6 +558,8 @@ def make_serializable(data):
         return serializable_dict(data)
     elif isinstance(data, HexBytes):
         return data.hex()
+    elif isinstance(data, Decimal):
+        return str(data)
     elif isinstance(data, list):
         return [make_serializable(elem) for elem in data]
     else:
@@ -462,6 +605,149 @@ def _call(transact):
 def abi():
     "Dump the abi of the contract"
     print(json_dumps(config.eth.abi))
+
+
+def resolve_block(spec, default_latest):
+    """Turn a --since/--until spec into a block number.
+
+    Accepts a bare block number, the keywords `earliest`/`latest`/`now`, or
+    any human date/time (parsed with parsedatetime and located by timestamp)."""
+    eth: Eth = config.eth
+    if spec is None or spec in ("latest", "now"):
+        return eth.w3.eth.block_number if default_latest else 0
+    if spec == "earliest":
+        return 0
+    if spec.isdigit():
+        return int(spec)
+    moment: datetime = parsedatetime(spec)[0]
+    return eth.block_at_timestamp(moment.timestamp())
+
+
+@contract.command()
+@argument("address", help="The wallet whose balance to reconstruct")
+@option("--since",
+        help="Start of the window: a date/time (e.g. '7 days ago'),"
+             " a block number, or 'earliest' (default: 7 days ago)",
+        default="7 days ago")
+@option("--until",
+        help="End of the window: a date/time, a block number, or 'now'"
+             " (default: now)",
+        default=None)
+@flag("--timestamps/--no-timestamps",
+      help="Resolve the time of each block (extra RPC calls)",
+      default=True)
+@option("--plot-output",
+        help="Render the balance as a step graph (PNG) to this path",
+        default=None)
+def balance_history(address, since, until, timestamps, plot_output):
+    """Reconstruct the ERC20 balance history of an address from Transfer events.
+
+    Requires an abi exposing the `Transfer` event (and ideally `decimals`),
+    e.g. `--abi-path alias:usdc`. Emits one JSON record per transfer touching
+    the address over the window, in chronological order, each carrying the
+    balance right after that transfer — ready to plot as a step series.
+
+    The balance is reconstructed *backward* from the current on-chain balance
+    (`balanceOf(until)`), so it works against non-archival RPCs: no historical
+    state read is needed. The first record is a synthetic `baseline` anchoring
+    the balance at the start of the window.
+
+    With --plot-output, also draw the balance over time as a step graph."""
+    eth: Eth = config.eth
+    contract = eth.contract
+    # the plot's x-axis needs block times, so force their resolution
+    need_times = timestamps or plot_output
+
+    checksummed = Web3.to_checksum_address(address)
+    if checksummed != address:
+        LOGGER.warning(f"Converting {address} to checksum address {checksummed}")
+    address = checksummed
+
+    from_block = resolve_block(since, default_latest=False)
+    to_block = resolve_block(until, default_latest=True)
+
+    try:
+        decimals = contract.caller.decimals()
+    except Exception:
+        LOGGER.warning("Could not read decimals(), assuming 18")
+        decimals = 18
+    scale = Decimal(10)**decimals
+
+    def humanize(value):
+        return Decimal(value) / scale
+
+    points = []  # (datetime, balance) collected for the optional plot
+
+    def emit(block, balance, **extra):
+        record = {"block": block, **extra, "balance": humanize(balance)}
+        if need_times:
+            moment = datetime.fromtimestamp(eth.block_timestamp(block))
+            if plot_output:
+                points.append((moment, humanize(balance)))
+            if timestamps:
+                record = {"timestamp": moment.isoformat(), **record}
+        print(json_dumps(make_serializable(record)))
+
+    logs = eth.transfer_logs(address, from_block, to_block)
+
+    # Walk backward from the current balance, recording the balance *after*
+    # each transfer; this avoids any historical-state read.
+    running = contract.caller.balanceOf(address, block_identifier=to_block)
+    enriched = []
+    for log in reversed(logs):
+        value = log["value"]
+        is_in = log["to"] == address
+        is_out = log["from"] == address
+        direction = "self" if (is_in and is_out) else "in" if is_in else "out"
+        enriched.append((log, direction, value, running))
+        if is_in:
+            running -= value
+        if is_out:
+            running += value
+    enriched.reverse()
+    # `running` is now the balance at the start of the window
+    baseline = running
+
+    emit(from_block, baseline, direction="baseline")
+    for log, direction, value, balance_after in enriched:
+        emit(log["blockNumber"], balance_after,
+             tx_hash=log["tx_hash"],
+             log_index=log["logIndex"],
+             **{"from": log["from"], "to": log["to"]},
+             direction=direction,
+             amount=humanize(value),
+             amount_raw=value)
+
+    if plot_output:
+        try:
+            symbol = contract.caller.symbol()
+        except Exception:
+            symbol = "token"
+        plot_balance_history(points, plot_output, address, symbol)
+        LOGGER.info(f"Wrote balance graph to {plot_output}")
+
+
+def plot_balance_history(points, output, address, symbol):
+    "Draw (datetime, balance) points as a step graph saved to `output`."
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+    import matplotlib.dates as mdates
+
+    times = [moment for moment, _ in points]
+    balances = [float(balance) for _, balance in points]
+
+    fig, ax = plt.subplots(figsize=(12, 5))
+    ax.step(times, balances, where="post")
+    ax.set_title(f"{symbol} balance of {address}")
+    ax.set_ylabel(symbol)
+    ax.set_xlabel("time")
+    ax.grid(True, alpha=0.3)
+    ax.xaxis.set_major_formatter(mdates.DateFormatter("%Y-%m-%d %H:%M"))
+    fig.autofmt_xdate()
+    fig.tight_layout()
+    fig.savefig(output, dpi=120)
+    plt.close(fig)
 
 
 @eth.command()
